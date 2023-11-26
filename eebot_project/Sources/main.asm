@@ -25,7 +25,7 @@ LCD_E      EQU     $80     ; LCD E-signal pin
 LCD_RS     EQU     $40     ; LCD RS-signal pin
 
 ; Time intervals
-MOVE_INT      EQU     3      ; 150us second delay (at 23Hz)
+MOVE_INT      EQU     3      ; 130ms second delay (at 23Hz)
 REV_INT       EQU     23     ; 1 second interval
 FWD_TRN_INT   EQU     34
 REV_TRN_INT   EQU     37
