@@ -1,6 +1,6 @@
 ;*****************************************************************
 ;* COE 538 - EEBOT Project - Version 1, Date: 15 Nov 2023        *
-;* Aaron Gaba (501062030), Keedon Cokely (#########),            * 
+;* Aaron Gaba (501062030), Keedon Cokely (501124817),            * 
 ;* Mohammed Furqaan Shaikh (501034654) 
 ;*                                                               *.                                                 
 ;*****************************************************************
@@ -69,7 +69,7 @@ THOUSANDS  RMB     1       ; 1,000 digit
 HUNDREDS   RMB     1       ; 100 digit
 TENS       RMB     1       ; 10 digit
 UNITS      RMB     1       ; 1 digit
-NO_BLANK   RMB     1       ; Used in ’leading zero’ blanking by BCD2ASC
+NO_BLANK   RMB     1       ; Used in â€™leading zeroâ€™ blanking by BCD2ASC
 BCD_SPARE  RMB     2       ; Extra space for decimal point and string terminator
 ADDATA     RMB     8       ; Storage for A/D converter results
 
@@ -758,7 +758,7 @@ UPDT_DISPL: ;MOVB  #$90, ATDCTL5     ; r.just., unsign., sing.conv., mult., ch0,
 G_LEDS_ON       BSET PORTA,%00100000 ; Set bit 5
                 RTS
 
-;­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­
+;Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­
 ;               Guider LEDs OFF
 
 ; This routine disables the guider LEDs. Readings of the sensor
