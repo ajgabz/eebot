@@ -99,8 +99,10 @@ Entry:
 _Startup:
             CLI
             LDS   #$4000            ; Initialize Stack Pointer
-            
-            ;JSR   initAD            ; Initialize ATD converter (this may conflict w/openADC)
+            BSET  DDRA, %00000011
+            BSET  DDRT, %00110000
+
+            JSR   initAD            ; Initialize ATD converter (this may conflict w/openADC)
             
             JSR   INIT_PORTS        ; Initialize ports
             JSR   openADC           ; Initalize ADC
