@@ -1,9 +1,14 @@
 ;*****************************************************************
-;* COE 538 - EEBOT Project - Version 1, Date: 15 Nov 2023        *
+;* COE 538 - EEBOT Project - Version 2, Date: 29 Nov 2023        *
 ;* Aaron Gaba (501062030), Keedon Cokely (501124817),            * 
-;* Mohammed Furqaan Shaikh (501034654) 
+;* Mohammed Furqaan Shaikh (501034654)                           *
 ;*                                                               *.                                                 
+;* This file contains all the guidance code for the EEBOT.       *
 ;*****************************************************************
+
+;* The thresholds and timing in this program are for EEBOT #102932 *
+;* The reverse-turn state has the EEBOT perform a 180-degree turn. *
+;* The forward-turn state has the EEBOT perform a forward left 90-degree turn.*
 
 ; export symbols
             XDEF Entry, _Startup            ; export 'Entry' symbol
@@ -24,52 +29,36 @@ LCD_CNTR   EQU     PTJ     ; LCD control port, bits - PE7(RS),PE4(E)
 LCD_E      EQU     $80     ; LCD E-signal pin
 LCD_RS     EQU     $40     ; LCD RS-signal pin
 
-; Time intervals
-MOVE_INT      EQU     3      ; 130ms second delay (at 23Hz)
-REV_INT       EQU     23     ; 1 second interval
-FWD_TRN_INT   EQU     34
-REV_TRN_INT   EQU     37
-
-; Motor commands
-PORT_ON_STBD_ON   EQU   %00110000
-PORT_ON_STBD_OFF  EQU   %00010000
-PORT_OFF_STBD_ON  EQU   %00100000
-PORT_OFF_STBD_OFF EQU   %00000000
-
-PORT_FWD_STBD_FWD EQU   %00000000
-PORT_FWD_STBD_REV EQU   %00000010
-PORT_REV_STBD_FWD EQU   %00000001
-PORT_REV_STBD_REV EQU   %00000011
+FWD_INT       EQU     3    ; 130ms second interval (at 23Hz)
+REV_INT       EQU     18   ; 1 second interval
+FWD_TRN_INT   EQU     34   ; 1.478s interval
+REV_TRN_INT   EQU     36   ; 1.565s interval
 
 ;Definitions of various states
 START         EQU     0
-OBSERVE       EQU     1
+FLW           EQU     1    ; Follow State
 REV           EQU     2
 ALL_STP       EQU     3
-FWD_TRN       EQU     4
+ADJUST        EQU     4    ; Adjust State
 REV_TRN       EQU     5
-FOLLOW_LINE   EQU     6
-
-
+FWD_TRN       EQU     6
 
 ; Variable/data section
            ORG $3850
 
-TOF_COUNTER dc.b 0          ; Timer, incremented at 23Hz
+TOF_COUNTER dc.b 0
 CRNT_STATE  dc.b 3          ; Current State
-T_MOVE       ds.b 1          ; FWD time
-T_REV       ds.b 1          ; REV time
-T_FWD_TRN   ds.b 1          ; FWD_TURN time
-T_REV_TRN   ds.b 1          ; REV_TURN time
-LAST_INTERSCT dc.b 0        ; Last intersection
-
+T_FWD       ds.b 1
+T_REV       ds.b 1
+T_FWD_TRN   ds.b 1
+T_REV_TRN   ds.b 1
            
 TEN_THOUS  RMB     1       ; 10,000 digit
 THOUSANDS  RMB     1       ; 1,000 digit
 HUNDREDS   RMB     1       ; 100 digit
 TENS       RMB     1       ; 10 digit
 UNITS      RMB     1       ; 1 digit
-NO_BLANK   RMB     1       ; Used in â€™leading zeroâ€™ blanking by BCD2ASC
+NO_BLANK   RMB     1       ; Used in ’leading zero’ blanking by BCD2ASC
 BCD_SPARE  RMB     2       ; Extra space for decimal point and string terminator
 ADDATA     RMB     8       ; Storage for A/D converter results
 
@@ -83,10 +72,10 @@ SENSOR_NUM      RMB 1                ; The currently selected sensor
 
 SENSOR_STATE    RMB 1                ; Byte holding binary state of each sensor
                                      ; b4 = BOW, b3 = PORT, b2 = MID, b1 = STBD, b0 = LINE
-
-MOTOR_PWR_CTRL    dc.b 0
-PREV_INTERSECTION dc.b 0             ; 0 (no prev intersection), 1 (left 90), 2 (right 90), 3 (T-intersection)
-                
+                                     
+MOTOR_PWR_STATE FCB %00011000        ; Byte holding motor power configuration                                    
+                                     ; Default Value: Port Motor ON, Starboard Motor ON
+                                     
 TEMP            RMB 1                ; Temporary location
 
 
@@ -99,13 +88,13 @@ Entry:
 _Startup:
             CLI
             LDS   #$4000            ; Initialize Stack Pointer
-            BSET  DDRA, %00000011
-            BSET  DDRT, %00110000
-
-            JSR   initAD            ; Initialize ATD converter (this may conflict w/openADC)
             
-            JSR   INIT_PORTS        ; Initialize ports
-            JSR   openADC           ; Initalize ADC
+            
+            BSET  DDRA, %00000011   ; STAR_DIR, PORT_DIR
+            BSET  DDRT, %00110000   ; STAR_SPEED, PORT_SPEED
+            
+           
+            JSR   initAD            ; Initialize ATD converter
             JSR   initLCD           ; Initialize LCD
             JSR   clrLCD            ; Clear LCD & Home Cursor
             
@@ -120,31 +109,34 @@ _Startup:
             
             JSR   ENABLE_TOF        ; Jump to TOF initialization
             
-MAIN:       ; Observe and then act 
-            JSR   UPDT_DISPL
-            JSR   OBSERVE_ENV
+            JSR INIT             ; Initialize ports
+            JSR openADC          ; Initialize the ATD
+                        
+            
+MAIN:       JSR   UPDT_DISPL
             LDAA  CRNT_STATE
             JSR   DISPATCHER
             BRA   MAIN
 
-;---------------------------------------------------------------------
-;Initialize ports
-;---------------------------------------------------------------------
-INIT_PORTS: BCLR  DDRAD, $FF        ; Make PortAD an input
-            BSET  DDRA,  $FF        ; Make PortA an output
-            BSET  DDRB,  $FF        ; Make PortB an output
-            BSET  DDRJ,  $C0        ; Make Pins 7,6 of PTJ outputs
-            RTS
+;---------------------------------------------------------------------------
+;               Initialize ports
 
-;---------------------------------------------------------------------
-;Turn on ADC
-;---------------------------------------------------------------------
-openADC:    MOVB  #$80, ATDCTL2     ; Turn on ADC (ATDCTL2)
-            LDY   #1                ; Wait 50 us for ADC to be ready
-            JSR   del_50us          
-            MOVB  #$20, ATDCTL3     ; 4 Conversions on Channel AN1
-            MOVB  #$97, ATDCTL4     ; 8-bit resolution, prescaler=48
-            RTS
+INIT            BCLR DDRAD,$FF       ; Make PORTAD an input (DDRAD @ $0272)
+                BSET DDRA,$FF        ; Make PORTA an output (DDRA @ $0002)
+                BSET DDRB,$FF        ; Make PORTB an output (DDRB @ $0003)
+                BSET DDRJ,$C0        ; Make pins 7,6 of PTJ outputs (DDRJ @ $026A) 
+                RTS
+
+;---------------------------------------------------------------------------
+;               Initialize the ADC
+
+openADC         MOVB #$80,ATDCTL2    ; Turn on ADC (ATDCTL2 @ $0082)
+                LDY  #1              ; Wait for 50 us for ADC to be ready
+                JSR  del_50us        ;    - " -
+                MOVB #$20,ATDCTL3    ; 4 conversions on channel AN1 (ATDCTL3 @ $0083)
+                MOVB #$97,ATDCTL4    ; 8-bit resolution, prescaler=48 (ATDCTL4 @ $0084)
+                RTS
+
 
 ;*****************************************************************
 ;* Data Section                                                  *
@@ -153,27 +145,12 @@ openADC:    MOVB  #$80, ATDCTL2     ; Turn on ADC (ATDCTL2)
 msg1        dc.b "Battery volt ", 0
 msg2        dc.b "State ", 0
 tab         dc.b "START  ", 0
-            dc.b "OBSERVE", 0
+            dc.b "FOLLOW ", 0
             dc.b "REV    ", 0
             dc.b "ALL_STP", 0
-            dc.b "FWD_TRN", 0
+            dc.b "ADJUST ", 0
             dc.b "REV_TRN", 0
-            dc.b "FOLLOW ", 0
-
-
-;*****************************************************************
-;* Environment Observer & Encoder                                *
-;*****************************************************************  
-OBSERVE_ENV:  JSR G_LEDS_ON              ; Enable the guider LEDs
-              
-              LDY #1000                  ; 50 ms delay for the photosensors to respond
-              JSR del_50us
-              
-              JSR READ_SENSORS           ; Read the 5 guider sensors
-              JSR ENCODE_SENSOR_DATA
-              JSR G_LEDS_OFF
-              RTS
-
+            dc.b "FWD_TRN", 0
 
 ;*****************************************************************
 ;* State Dispatcher                                              *
@@ -186,113 +163,84 @@ DISPATCHER:        CMPA #START           ;If it's the START state
                    JSR  START_ST         ;and exit
                    JMP  DISP_EXIT
 
-NOT_START:         CMPA #OBSERVE         ;Else if it's the FORWARD state
-                   BNE  NOT_OBSERVE      ;Then call the FORWARD routine 
-                   JSR  OBSERVE_ST       ;and exit
+NOT_START:         CMPA #FLW             ;Else if it's the FOLLOW (LINE) state
+                   BNE  NOT_FORWARD      ;Then call the FOLLOW routine 
+                   JSR  FWD_ST           ;and exit
                    JMP  DISP_EXIT
 
-NOT_OBSERVE:       CMPA #FOLLOW_LINE     ;Else if it's the FOLLOW-LINE state
-                   BNE  NOT_FOLLOW_LINE  ;Then call the FOLLOW-LINE routine
-                   JSR  FOLLOW_LINE_ST   ;and exit
-                   JMP  DISP_EXIT
-
-NOT_FOLLOW_LINE:   CMPA #REV             ;Else if it's the REVERSE state
+NOT_FORWARD:       CMPA #REV             ;Else if it's the REVERSE state
                    BNE  NOT_REVERSE      ;Then call the REVERSE routine
                    JSR  REV_ST           ;and exit
                    JMP  DISP_EXIT
-
 
 NOT_REVERSE:       CMPA #ALL_STP         ;Else if it's the ALL-STOP state
                    BNE  NOT_ALL_STOP     ;Then call the ALL-STOP routine
                    JSR  ALL_STP_ST       ;and exit
                    JMP  DISP_EXIT
                                          
-NOT_ALL_STOP:      CMPA #FWD_TRN           ;Else if it's the FORWARD_TURN state
-                   BNE  NOT_FORWARD_TURN   ;Then call the FORWARD_TURN routine
-                   JSR  FWD_TRN_ST         ;and exit
+NOT_ALL_STOP:      CMPA #ADJUST           ;Else if it's the ADJUST state
+                   BNE  NOT_ADJUST        ;Then call the ADJUST routine
+                   JSR  ADJUST_ST
                    JMP  DISP_EXIT
          
-NOT_FORWARD_TURN:  CMPA #REV_TRN           ;Else if it's the REVERSE_TRN state
+NOT_ADJUST:        CMPA #REV_TRN           ;Else if it's the REVERSE_TRN state
                    BNE  NOT_REVERSE_TURN   ;Then call the REVERSE_TURN state
                    JSR  REV_TRN_ST         ;and exit
                    JMP  DISP_EXIT
+                                            ;Else if it's the FORWARD-TRN state
+NOT_REVERSE_TURN:  CMPA #FWD_TRN            ;Then call the FORWARD_TRN state
+                   BNE  NO_MORE_STATES      ;and exit
+                   JSR  FWD_TRN_ST
+                   JMP  DISP_EXIT
 
-NOT_REVERSE_TURN:  SWI                     ; Else, the current state is NOT defined, so stop
+NO_MORE_STATES:    SWI                     ; Otherwise, we're in an invalid state.  Finish program. 
 
 DISP_EXIT:         RTS                     ; Exit from the state dispatcher
+
 
 
 ;*****************************************************************
 ;* Subroutine Section                                            *
 ;*****************************************************************  
 
-
 ;*****************************************************************
-;Adjust motor control based upon line following conditions       *
-;*****************************************************************
-GET_MOTOR_CONTROL:  BCLR  PTT, #%00110000  ; Turn off both motors
-                    BRSET SENSOR_STATE, #%00010101, ALL_MOTORS_ON
-                    BRSET SENSOR_STATE, #%00000100, ADJUST_ANGLE                     
-                    RTS
-
-ALL_MOTORS_ON:      BCLR  PORTA, #%00000011  ; Have both motors go forward
-                    BSET  PTT,   #%00110000  ; Turn on both motors 
-                    RTS
-
-ADJUST_ANGLE:       LDAA  SENSOR_LINE
-                    CMPA  #$44
-                    BLS   ADJUST_BOT_LEFT
-
-ADJUST_BOT_RIGHT:   JSR   PORTOFF
-                    JSR   STARFWD
-                    JSR   STARON
-                    RTS
-                    
-ADJUST_BOT_LEFT:    JSR   STAROFF
-                    JSR   PORTFWD
-                    JSR   PORTON
-                    RTS
+;* Encode Sensor Data                                            *
+;* Converts the raw sensors values produced by the ADC into bits.*
+;* Sensor State is a one byte value that holds the state of the  *
+;* EEBOT's sensors.                                              *
+;*
+;* Sensor State:  b7 (MSB), b6, b5, b4, b3, b2, b1, b0 (LSB)     *
+;* If a sensor registers dark, its corresponding bit is set to 1.*
+;* Bits 5 through 7 are unused and they are set to 0.
+;***************************************************************** 
 
 
-;*****************************************************************
-;* Encode all sensors into the SENSOR_STATE variable             *
-;*****************************************************************
-
-ENCODE_SENSOR_DATA: MOVB  #0, SENSOR_STATE  ; Initialize Sensor_State to 0
+ENCODE_SENSOR_DATA: MOVB  #0, SENSOR_STATE  ; Initialize Sensor_State to 0  // So all bits are set to zero
 
 ENCODE_BOW_DATA:    LDAA  #$CA              ; Dark threshold for Sensor A (BOW), $CA = 202 
                     CMPA  SENSOR_BOW        ; Compare threshold to raw value from sensor
-                    BLS   ENCODE_BOW_DARK   ;
-ENCODE_BOW_LIGHT:   BCLR  SENSOR_STATE, #16 ; If Bow Sensor is LIGHT, set bit 4 to 0
-                    JMP   ENCODE_PORT_DATA 
+                    BHS   ENCODE_PORT_DATA   ;
+                    BSET  SENSOR_STATE, #16 ; If Bow Sensor is DARK, set bit 4 to 1
 
-ENCODE_BOW_DARK:    BSET  SENSOR_STATE, #16 ; If Bow Sensor is DARK, set bit 4 to 1
-
-ENCODE_PORT_DATA:   LDAA  #$CA              ; Dark threshold for Sensor B (PORT)          
+ENCODE_PORT_DATA:   LDAA  #$CA              ; Dark threshold for Sensor B (PORT)           
                     CMPA  SENSOR_PORT       ; Compare threshold to raw value for sensor
-                    BLS   ENCODE_PORT_DARK  
-ENCODE_PORT_LIGHT:  BCLR  SENSOR_STATE, #8  ; If Port Sensor is LIGHT, set bit 3 to 0
-                    JMP   ENCODE_MID_DATA   
-ENCODE_PORT_DARK:   BSET  SENSOR_STATE, #8  ; If Port Sensor is DARK, set bit 3 to 1
+                    BHS   ENCODE_MID_DATA  
+                    BSET  SENSOR_STATE, #8  ; If Port Sensor is DARK, set bit 3 to 1
 
 ENCODE_MID_DATA:    LDAA  #$CA              ; Dark threshold for Sensor C (MID)          
                     CMPA  SENSOR_MID       ; Compare threshold to raw value for sensor
-                    BLS   ENCODE_MID_DARK  
-ENCODE_MID_LIGHT:   BCLR  SENSOR_STATE, #4  ; If Mid Sensor is LIGHT, set bit 2 to 0
-                    JMP   ENCODE_STBD_DATA   
-ENCODE_MID_DARK:    BSET  SENSOR_STATE, #4  ; If Mid Sensor is DARK, set bit 2 to 1
+                    BHS   ENCODE_STBD_DATA
+                    BSET  SENSOR_STATE, #4  ; If Mid Sensor is DARK, set bit 2 to 1
 
-ENCODE_STBD_DATA:   LDAA  #$CA              ; Dark threshold for Sensor D (STBD)          
+ENCODE_STBD_DATA:   LDAA  #$AA              ; Dark threshold for Sensor D (STBD)          
                     CMPA  SENSOR_STBD       ; Compare threshold to raw value for sensor
-                    BLS   ENCODE_STBD_DARK  
-ENCODE_STBD_LIGHT:  BCLR  SENSOR_STATE, #2  ; If STBD Sensor is LIGHT, set bit 1 to 0
-                    JMP   ENCODE_LINE_DATA   
-ENCODE_STBD_DARK:   BSET  SENSOR_STATE, #2  ; If STBD Sensor is DARK, set bit 1 to 1
+                    BHS   ENCODE_LINE_DATA
+                    BSET  SENSOR_STATE, #2  ; If STBD Sensor is DARK, set bit 1 to 1  
 
-ENCODE_LINE_DATA:   LDAA  #$44                   ; Lower threshold for Sensors E-F (LINE)          
+ENCODE_LINE_DATA:   LDAA  #$23                   ; Lower threshold for Sensors E-F (LINE)          
                     CMPA  SENSOR_LINE            ; Compare threshold to raw value for sensor
                     BHS   ENCODE_LINE_NONUNI 
-ENCODE_LINE_UNI:    LDAA  #$61                   ; Higher threshold for Sensors E-F (LINE)
+ENCODE_LINE_UNI:    LDAA  #$90                   ; Higher threshold for Sensors E-F (LINE)
                     CMPA  SENSOR_LINE
                     BLS   ENCODE_LINE_NONUNI                    
                     BSET  SENSOR_STATE, #1        ; If Line Sensor is UNIFORM, set bit 0 to 1
@@ -300,54 +248,81 @@ ENCODE_LINE_UNI:    LDAA  #$61                   ; Higher threshold for Sensors 
 ENCODE_LINE_NONUNI: BCLR  SENSOR_STATE, #1     ; If Port Sensor is NON-UNIFORM, set bit 0 to 0
                     RTS                           ; Return
 
+
+;*****************************************************************
+;* Adjust Line Tracking                                          *
+;* This subroutine configures the EEBOT's motor power controls   *
+;* based upon how the bot is currently following the line.       *
+;*****************************************************************
+
+ADJUST_LINE_TRACKING:  
+                       BRSET SENSOR_STATE, #%00010100, ALL_MOTORS_GO       ; If BOW and MID sensors are dark, we're centered
+                                                                           ; Then we go straight.  Otherwise, we're crooked.
+                       BRA ADJUST_MOTORS
+
+ALL_MOTORS_GO:         
+                       LDAA #%00110000           ; Port Motor ON, Starboard Motor ON
+                       STAA MOTOR_PWR_STATE
+                       RTS
+
+
+ADJUST_MOTORS:         LDAA   #$23               ; If LINE Sensor < Low Threshold
+                       CMPA   SENSOR_LINE        ; Then adjust the bot left
+                       BHS    ADJUST_LEFT         
+
+                       LDAA #$90                ; High Threshold (Previously, we used $A0)
+                       CMPA SENSOR_LINE         ; Check if SENSOR_LINE > 60
+                       BLS  ADJUST_RIGHT
+                         
+                       LDAA #%00011000          ; Otherwise, E-F SENSOR is not askew
+                       STAA MOTOR_PWR_STATE
+                       RTS                      ; Keep both motors ON and return
+                        
+ADJUST_LEFT:           LDAA #%00010000          ; Port Motor ON, Starboard Motor OFF
+                       STAA MOTOR_PWR_STATE
+                       RTS
+                       
+ADJUST_RIGHT:          LDAA #%00100000          ; Port Motor OFF, Starboard Motor ON
+                       STAA MOTOR_PWR_STATE
+                       RTS
+
+
 ;*****************************************************************  
 START_ST:     BRCLR PORTAD0,  $04, NO_FWD        ; If FWD_BMP
-              MOVB  #OBSERVE, CRNT_STATE         ; Go into the OBSERVE state
+              JSR   INIT_FWD                     ; Initialize the FOLLOW state
+              MOVB  #FLW, CRNT_STATE             ; Go into the FOLLOW state
               BRA   START_EXIT
               
 NO_FWD:       NOP                                ; Else
 START_EXIT    RTS                                ; Return to the MAIN routine
 
-;*******************************************************************
-OBSERVE_ST:   BRSET  PORTAD0, $04, NO_FWD_BUMP   ; If FWD_BUMP then we have a collision,
+;*****************************************************************
+FWD_ST:       BRSET  PORTAD0, $04, NO_FWD_BUMP   ; If FWD_BUMP then
               JSR    INIT_REV                    ; initialize the REVERSE routine
               MOVB   #REV, CRNT_STATE            ; set the state to REVERSE
-              JMP    OBS_EXIT                    ; and return 
+              JMP    FWD_EXIT                    ; and return 
             
-NO_FWD_BUMP:  BRSET  PORTAD0, $08, NO_INTERSECT  ; If REAR_BUMP, then we should stop
+NO_FWD_BUMP:  BRSET  PORTAD0, $08, NO_REAR_BUMP  ; If REAR_BUMP, then we should stop
               JSR    INIT_ALL_STP                ; So initialize the ALL_STOP state
               MOVB   #ALL_STP, CRNT_STATE        ; and change state to ALL_STOP
-              JMP    OBS_EXIT                    ; and return
+              JMP    FWD_EXIT                    ; and return
 
-NO_INTERSECT: BRSET  SENSOR_STATE, %00000111, HANDLE_RT_90  ;Handle Right 90 deg corner, if detected
-              JSR    INIT_FOLLOW_LINE
-              MOVB   #FOLLOW_LINE, CRNT_STATE
-              JMP    OBS_EXIT
+NO_REAR_BUMP: BRSET  SENSOR_STATE, #%00001100, IS_INTERSECT  ; If PORT & MID sensors active, make a left turn
+              LDAA   TOF_COUNTER                             ; Else if Tc > Tfwd, then
+              CMPA   T_FWD                                   ; the robot should read sensors and adjust
+              BNE    NO_FWD_TURN                             ; so
+              JSR    INIT_ADJUST                             ; initialize the ADJUST state
+              MOVB   #ADJUST, CRNT_STATE                    ; and go to that state
+              JMP    FWD_EXIT  
 
-HANDLE_RT_90: JSR    INIT_FWD_TRN                ; If right angle encountered, 
-              MOVB   #FWD_TRN, CRNT_STATE        ; initialize bot to make 90 degree turn
-              JMP    OBS_EXIT
-              
-OBS_EXIT     RTS                                 ; Return to the MAIN routine
-
+IS_INTERSECT: JSR    INIT_FWD_TRN                       ; Initialize motors to make a left turn
+              MOVB   #FWD_TRN, CRNT_STATE               ; Set state to FWD_TRN state
+              JMP    FWD_EXIT              
+            
+NO_FWD_TURN  NOP                                 ; Else
+FWD_EXIT     RTS                                 ; Return to the MAIN routine
 
 ;*****************************************************************
-INIT_FOLLOW_LINE: JSR   GET_MOTOR_CONTROL
-                  LDAA  TOF_COUNTER               ; Mark the fwd time T(fwd)
-                  ADDA  #MOVE_INT
-                  STAA  T_MOVE
-                  RTS
-;*****************************************************************
-FOLLOW_LINE_ST:   LDAA  TOF_COUNTER
-                  CMPA  T_MOVE
-                  BNE   STILL_MOVING
-                  MOVB  #OBSERVE, CRNT_STATE
-                  RTS
-
-STILL_MOVING:     NOP
-                  RTS
-;*****************************************************************
-
 REV_ST:      LDAA TOF_COUNTER                    ; If Tc > Trev, then
              CMPA T_REV                          ; the robot should make a FORWARD turn
              BNE  NO_REV_TRN
@@ -368,31 +343,34 @@ NO_START:     NOP                               ; Else
 ALL_STP_EXIT: RTS                               ; Return to the MAIN routine
 
 ;*****************************************************************           
-FWD_TRN_ST:   LDAA  TOF_COUNTER                 ; If Tc > T(fwdtrn) then
-              CMPA  T_FWD_TRN                   ; the robot should observe again
-              BNE   NO_FWD_FT
-              MOVB  #OBSERVE, CRNT_STATE        ; Set state to FWD
-              BRA   FWD_TRN_EXIT                ; And return
-
-NO_FWD_FT:    NOP                              ; Else
-FWD_TRN_EXIT: RTS                              ; Return to the MAIN routine
-
-
+ADJUST_ST:   JSR   INIT_FWD                    ; With adjustments made to the motors,
+             MOVB  #FLW, CRNT_STATE            ; then set state to FOLLOW
+             RTS                               ; And return to the MAIN routine
 
 ;*****************************************************************
 REV_TRN_ST:   LDAA  TOF_COUNTER               ; If Tc > T(revturn) then
-              CMPA  T_REV_TRN                 ; the robot should go FWD
+              CMPA  T_REV_TRN                 ; the robot should go follow line
               BNE   NO_FWD_RT                   
-              MOVB  #OBSERVE, CRNT_STATE      ; Set state to FWD
+              JSR   INIT_FWD                  ; So initialize the FOLLOW state
+              MOVB  #FLW, CRNT_STATE          ; Set state to FOLLOW
               BRA   REV_TRN_EXIT              ; and return
 
 NO_FWD_RT:    NOP                             ; Else
 REV_TRN_EXIT: RTS                             ; Return to the MAIN routine
 
 ;*****************************************************************
+INIT_FWD:     BCLR  PORTA, %00000011          ; Set FWD direction for both motors
+              LDAA  MOTOR_PWR_STATE           ; Set Port T (Motor Power) with MOTOR_PWR_STATE variable
+              STAA  PTT
+              LDAA  TOF_COUNTER               ; Mark the fwd time T(fwd)
+              ADDA  #FWD_INT
+              STAA  T_FWD
+              RTS
+
+;*****************************************************************
 INIT_REV:     BSET  PORTA, %00000011          ; Set REV direction for both motors
               BSET  PTT,   %00110000          ; Turn on the drive motors
-              LDAA  TOF_COUNTER               ; Mark the fwd time Trev
+              LDAA  TOF_COUNTER               ; Maek the fwd time Trev
               ADDA  #REV_INT
               STAA  T_REV
               RTS
@@ -400,22 +378,53 @@ INIT_REV:     BSET  PORTA, %00000011          ; Set REV direction for both motor
 ;*****************************************************************
 INIT_ALL_STP: BCLR  PTT, %00110000            ; Turn off the drive motors
               RTS
-    
+
 ;*****************************************************************
-INIT_FWD_TRN: JSR   PORTFWD
-              JSR   STAROFF
-              JSR   PORTON
-              LDAA  TOF_COUNTER              ; Mark the fwd_turn time, T_FWD_TRN
-              ADDA  #FWD_TRN_INT 
-              STAA  T_FWD_TRN
+;* This method performs a forward LEFT 90-degree turn.           *
+;*****************************************************************
+INIT_FWD_TRN:      BCLR  PORTA, %00000010    ; Set Starboard Motor FWD
+                    BSET  PTT,   %00100000    ; Turn on Starboard Motor
+                    BCLR  PTT,   %00010000    ; Turn off Port Motor
+                    LDAA  TOF_COUNTER              ; Mark the fwd_turn time, T_FWD_TRN
+                    ADDA  #FWD_TRN_INT 
+                    STAA  T_FWD_TRN 
+                    RTS
+;*******************************************************************
+FWD_TRN_ST: 
+                 LDAA  TOF_COUNTER                 ; If Tc > T(fwdtrn) then
+                 CMPA  T_FWD_TRN                   ; the robot should go FORWARD
+                 BNE   NO_FWD_FT
+                 JSR   INIT_ADJUST                 ; Make adjustments to the motors based on sensor data
+                 JSR   INIT_FWD                    ; Then initialize the FOLLOW state
+                 MOVB  #FLW, CRNT_STATE            ; Set state to FOLLOW
+                 BRA   FWD_TRN_EXIT              ; And return
+
+NO_FWD_FT:      NOP                              ; Else
+                RTS
+                
+FWD_TRN_EXIT:   MOVB #FLW, CRNT_STATE
+                RTS   
+
+;*****************************************************************
+;INIT_ADJUST pauses the motors and gets readings 
+;from all the EEBOT's photosensors.  It then encodes the data
+;and adjusts the motors accordingly.
+;*****************************************************************
+INIT_ADJUST:  BCLR PTT, %00110000  ; Turn off motors while making decision
+              JSR G_LEDS_ON        ; Enable the guider LEDs
+              
+              LDY #$600            ; A 30ms delay (previously 258)
+              JSR del_50us         ; to give photosensors enough time to react
+              
+              JSR READ_SENSORS     ; Read the 5 guider sensors
+              JSR G_LEDS_OFF       ; Disable the guider LEDs
+              JSR ENCODE_SENSOR_DATA   ; Encode the sensor data 
+              JSR ADJUST_LINE_TRACKING ; Adjust motors based upon sensor data
+              
               RTS 
 
 ;*****************************************************************
-INIT_REV_TRN: 
-              JSR   STARFWD
-              JSR   PORTREV
-              JSR   STARON
-              JSR   PORTON
+INIT_REV_TRN: BCLR  PORTA, %00000010        ; Set FWD direction for STARBOARD (right) motor      
               LDAA  TOF_COUNTER             ; Mark the rev_turn time, T_REV_TRN
               ADDA  #REV_TRN_INT
               STAA  T_REV_TRN
@@ -634,7 +643,7 @@ ENABLE_TOF:
             LDAA  #%10000000   
             STAA  TSCR1        ; Enable TCNT
             STAA  TFLG2        ; Clear TOF
-            LDAA  #%10000100   ; Enable TOI and select prescale factor equal to 16
+            LDAA  #%10000100   ; Enable TOI and select prescale factor equal to 16 (#%10000100)
             STAA  TSCR2
             RTS
  
@@ -652,61 +661,12 @@ DISABLE_TOF:
             RTS
 
 ;*****************************************************************
-;* Motor Power & Direction Subroutines                           *
-;*****************************************************************            
-
-
-STARON      LDAA  PTT
-            ORAA  #%00100000
-            STAA  PTT
-            RTS
-            
-STAROFF     LDAA  PTT
-            ANDA  #%11011111
-            STAA  PTT
-            RTS
-
-PORTON      LDAA  PTT
-            ORAA  #%00010000
-            STAA  PTT
-            RTS
-            
-PORTOFF     LDAA  PTT
-            ANDA  #%11101111
-            STAA  PTT
-            RTS
-
-
-STARFWD     LDAA  PORTA
-            ANDA  #%11111101
-            STAA  PORTA
-            RTS
-
-STARREV     LDAA  PORTA
-            ORAA  #%00000010
-            STAA  PORTA
-            RTS
-
-PORTFWD     LDAA  PORTA
-            ANDA  #%11111110
-            STAA  PORTA
-            RTS
-
-PORTREV     LDAA  PORTA
-            ORAA  #%00000001
-            STAA  PORTA
-            RTS
-
-
-
-;*****************************************************************
 ;* Update Display (Battery Voltage + Current State)              *
 ;*****************************************************************  
-UPDT_DISPL: ;MOVB  #$90, ATDCTL5     ; r.just., unsign., sing.conv., mult., ch0, start conv.                         
-            ;BRCLR  ATDSTAT0, $80, *  ; Wait until the conversion sequence is complete 
+UPDT_DISPL: MOVB  #$90, ATDCTL5     ; r.just., unsign., sing.conv., mult., ch0, start conv.                         
+            BRCLR  ATDSTAT0, $80, *  ; Wait until the conversion sequence is complete 
             
-            ;LDAA  ATDDR4L            ; load the ch4 result into AccA
-            LDAA  #40               ; Dummy value (since we're ignoring the ADC subsystem)
+            LDAA  ATDDR4L            ; load the ch4 result into AccA
             LDAB  #39               ; AccB = 39
             MUL                     ; AccD = (1st Result) * 39
             ADDD  #600               ; AccD = (1st Result) * 39 + 600
@@ -760,7 +720,7 @@ UPDT_DISPL: ;MOVB  #$90, ATDCTL5     ; r.just., unsign., sing.conv., mult., ch0,
 G_LEDS_ON       BSET PORTA,%00100000 ; Set bit 5
                 RTS
 
-;Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­Â­
+;­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­
 ;               Guider LEDs OFF
 
 ; This routine disables the guider LEDs. Readings of the sensor
@@ -881,25 +841,52 @@ SELECT_SENSOR   PSHA                 ; Save the sensor number for the moment
                 STAA PORTA           ; Update the hardware
                 RTS
 ;
-
-
-
-;*****************************************************************
-;* Binary to ASCII                                               *
-;*****************************************************************   
-leftHLF:    LSRA                     ; Shift data to right
-            LSRA                     ;
-            LSRA
-            LSRA
-
-rightHLF:   ANDA   #$0F              ; Mask top half
-            ADDA   #$30              ; Convert to ASCII
-            CMPA   #$39              ;
-            BLE    out               ; Jump if 0-9
-            ADDA   #$07              ; Convert to Hex A-F
-
-out:        RTS                   
             
+;*****************************************************************
+;* Motor Power & Direction Subroutines                           *
+;*****************************************************************  
+
+STARON      LDAA  PTT
+            ORAA  #%00100000
+            STAA  PTT
+            RTS
+            
+STAROFF     LDAA  PTT
+            ANDA  #%11011111
+            STAA  PTT
+            RTS
+
+PORTON      LDAA  PTT
+            ORAA  #%00010000
+            STAA  PTT
+            RTS
+            
+PORTOFF     LDAA  PTT
+            ANDA  #%11101111
+            STAA  PTT
+            RTS
+
+
+STARFWD     LDAA  PORTA
+            ANDA  #%11111101
+            STAA  PORTA
+            RTS
+
+STARREV     LDAA  PORTA
+            ORAA  #%00000010
+            STAA  PORTA
+            RTS
+
+PORTFWD     LDAA  PORTA
+            ANDA  #%11111110
+            STAA  PORTA
+            RTS
+
+PORTREV     LDAA  PORTA
+            ORAA  #%00000001
+            STAA  PORTA
+            RTS
+
             
 ;**************************************************************
 ;*                 Interrupt Vectors                          *
