@@ -29,7 +29,7 @@ LCD_CNTR   EQU     PTJ     ; LCD control port, bits - PE7(RS),PE4(E)
 LCD_E      EQU     $80     ; LCD E-signal pin
 LCD_RS     EQU     $40     ; LCD RS-signal pin
 
-FWD_INT       EQU     3    ; 130ms second interval (at 23Hz)
+FLW_INT       EQU     3    ; 130ms interval (at 23Hz)
 REV_INT       EQU     18   ; 1 second interval
 FWD_TRN_INT   EQU     34   ; 1.478s interval
 REV_TRN_INT   EQU     36   ; 1.565s interval
@@ -48,7 +48,7 @@ FWD_TRN       EQU     6
 
 TOF_COUNTER dc.b 0
 CRNT_STATE  dc.b 3          ; Current State
-T_FWD       ds.b 1
+T_FLW       ds.b 1
 T_REV       ds.b 1
 T_FWD_TRN   ds.b 1
 T_REV_TRN   ds.b 1
@@ -165,7 +165,7 @@ DISPATCHER:        CMPA #START           ;If it's the START state
 
 NOT_START:         CMPA #FLW             ;Else if it's the FOLLOW (LINE) state
                    BNE  NOT_FORWARD      ;Then call the FOLLOW routine 
-                   JSR  FWD_ST           ;and exit
+                   JSR  FLW_ST           ;and exit
                    JMP  DISP_EXIT
 
 NOT_FORWARD:       CMPA #REV             ;Else if it's the REVERSE state
@@ -289,7 +289,7 @@ ADJUST_RIGHT:          LDAA #%00100000          ; Port Motor OFF, Starboard Moto
 
 ;*****************************************************************  
 START_ST:     BRCLR PORTAD0,  $04, NO_FWD        ; If FWD_BMP
-              JSR   INIT_FWD                     ; Initialize the FOLLOW state
+              JSR   INIT_FLW                     ; Initialize the FOLLOW state
               MOVB  #FLW, CRNT_STATE             ; Go into the FOLLOW state
               BRA   START_EXIT
               
@@ -297,30 +297,33 @@ NO_FWD:       NOP                                ; Else
 START_EXIT    RTS                                ; Return to the MAIN routine
 
 ;*****************************************************************
-FWD_ST:       BRSET  PORTAD0, $04, NO_FWD_BUMP   ; If FWD_BUMP then
+; FLW_ST is the FOLLOW state that coordinates  
+; the EEBOT's line-following activities.
+;*****************************************************************
+FLW_ST:       BRSET  PORTAD0, $04, NO_FWD_BUMP   ; If FWD_BUMP then
               JSR    INIT_REV                    ; initialize the REVERSE routine
               MOVB   #REV, CRNT_STATE            ; set the state to REVERSE
-              JMP    FWD_EXIT                    ; and return 
+              JMP    FLW_EXIT                    ; and return 
             
 NO_FWD_BUMP:  BRSET  PORTAD0, $08, NO_REAR_BUMP  ; If REAR_BUMP, then we should stop
               JSR    INIT_ALL_STP                ; So initialize the ALL_STOP state
               MOVB   #ALL_STP, CRNT_STATE        ; and change state to ALL_STOP
-              JMP    FWD_EXIT                    ; and return
+              JMP    FLW_EXIT                    ; and return
 
 NO_REAR_BUMP: BRSET  SENSOR_STATE, #%00001100, IS_INTERSECT  ; If PORT & MID sensors active, make a left turn
-              LDAA   TOF_COUNTER                             ; Else if Tc > Tfwd, then
-              CMPA   T_FWD                                   ; the robot should read sensors and adjust
+              LDAA   TOF_COUNTER                             ; Else if Tc > Tflw, then
+              CMPA   T_FLW                                   ; the robot should read sensors and adjust
               BNE    NO_FWD_TURN                             ; so
               JSR    INIT_ADJUST                             ; initialize the ADJUST state
               MOVB   #ADJUST, CRNT_STATE                    ; and go to that state
-              JMP    FWD_EXIT  
+              JMP    FLW_EXIT  
 
 IS_INTERSECT: JSR    INIT_FWD_TRN                       ; Initialize motors to make a left turn
               MOVB   #FWD_TRN, CRNT_STATE               ; Set state to FWD_TRN state
-              JMP    FWD_EXIT              
+              JMP    FLW_EXIT              
             
 NO_FWD_TURN  NOP                                 ; Else
-FWD_EXIT     RTS                                 ; Return to the MAIN routine
+FLW_EXIT     RTS                                 ; Return to the MAIN routine
 
 ;*****************************************************************
 REV_ST:      LDAA TOF_COUNTER                    ; If Tc > Trev, then
@@ -343,7 +346,7 @@ NO_START:     NOP                               ; Else
 ALL_STP_EXIT: RTS                               ; Return to the MAIN routine
 
 ;*****************************************************************           
-ADJUST_ST:   JSR   INIT_FWD                    ; With adjustments made to the motors,
+ADJUST_ST:   JSR   INIT_FLW                    ; With adjustments made to the motors,
              MOVB  #FLW, CRNT_STATE            ; then set state to FOLLOW
              RTS                               ; And return to the MAIN routine
 
@@ -351,7 +354,7 @@ ADJUST_ST:   JSR   INIT_FWD                    ; With adjustments made to the mo
 REV_TRN_ST:   LDAA  TOF_COUNTER               ; If Tc > T(revturn) then
               CMPA  T_REV_TRN                 ; the robot should go follow line
               BNE   NO_FWD_RT                   
-              JSR   INIT_FWD                  ; So initialize the FOLLOW state
+              JSR   INIT_FLW                  ; So initialize the FOLLOW state
               MOVB  #FLW, CRNT_STATE          ; Set state to FOLLOW
               BRA   REV_TRN_EXIT              ; and return
 
@@ -359,18 +362,18 @@ NO_FWD_RT:    NOP                             ; Else
 REV_TRN_EXIT: RTS                             ; Return to the MAIN routine
 
 ;*****************************************************************
-INIT_FWD:     BCLR  PORTA, %00000011          ; Set FWD direction for both motors
+INIT_FLW:     BCLR  PORTA, %00000011          ; Set FWD direction for both motors
               LDAA  MOTOR_PWR_STATE           ; Set Port T (Motor Power) with MOTOR_PWR_STATE variable
               STAA  PTT
-              LDAA  TOF_COUNTER               ; Mark the fwd time T(fwd)
-              ADDA  #FWD_INT
-              STAA  T_FWD
+              LDAA  TOF_COUNTER               ; Mark the follow time T(flw)
+              ADDA  #FLW_INT
+              STAA  T_FLW
               RTS
 
 ;*****************************************************************
 INIT_REV:     BSET  PORTA, %00000011          ; Set REV direction for both motors
               BSET  PTT,   %00110000          ; Turn on the drive motors
-              LDAA  TOF_COUNTER               ; Maek the fwd time Trev
+              LDAA  TOF_COUNTER               ; Maek the reverse time Trev
               ADDA  #REV_INT
               STAA  T_REV
               RTS
@@ -395,7 +398,7 @@ FWD_TRN_ST:
                  CMPA  T_FWD_TRN                   ; the robot should go FORWARD
                  BNE   NO_FWD_FT
                  JSR   INIT_ADJUST                 ; Make adjustments to the motors based on sensor data
-                 JSR   INIT_FWD                    ; Then initialize the FOLLOW state
+                 JSR   INIT_FLW                    ; Then initialize the FOLLOW state
                  MOVB  #FLW, CRNT_STATE            ; Set state to FOLLOW
                  BRA   FWD_TRN_EXIT              ; And return
 
